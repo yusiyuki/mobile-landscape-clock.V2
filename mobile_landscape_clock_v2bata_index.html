@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#000000" />
+  <!-- iOS 安裝到主畫面支援 -->
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="OLED Clock" />
+  <title>OLED Safe Clock</title>
+  <style>
+    :root {
+      --bg: #000; /* 全黑省電 */
+      --fg: #e6e6e6; /* 柔和白 */
+      --accent: #7dd3fc; /* 淡藍點綴 */
+      --nudge-x: 0px; /* 防烙印位移 - X */
+      --safe-padding: env(safe-area-inset-left, 0px);
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: ui-rounded, system-ui, -apple-system, Segoe UI, Roboto, Noto Sans, sans-serif;
+      touch-action: manipulation;
+      -webkit-tap-highlight-color: transparent;
+      overflow: hidden; /* 防止位移時出現捲動 */
+      /* 使用者自訂背景層（覆蓋） + 純黑底 */
+      background-image: var(--user-bg, none);
+      background-size: cover;
+      background-position: center center;
+      background-repeat: no-repeat;
+    }
+
+    /* 獨立背景層：確保全螢幕也能顯示背景 */
+    #bgLayer { position: fixed; inset: 0; background-image: var(--user-bg, none); background-size: cover; background-position: center; background-repeat: no-repeat; z-index: 0; }
+
+    /* 半透明遮罩提升可讀性 */
+    .overlay { position: fixed; inset: 0; pointer-events:none; background: rgba(0,0,0,.25); z-index: 1; }
+
+    /* 主要舞台 */
+    #stage { position: fixed; inset: 0; display: grid; place-items: center; padding: 12px; padding-left: calc(12px + var(--safe-padding)); z-index: 2; }
+
+    /* HUD（右上角） */
+    .hud { position: fixed; top: 8px; right: 8px; display: flex; gap: 8px; align-items: center; z-index: 3; }
+    .hud button { font-size: 18px; line-height: 1; padding: 10px 12px; border-radius: 14px; border: 1px solid #333; background: #111; color: var(--fg); box-shadow: 0 4px 16px rgba(0,0,0,.35); cursor: pointer; opacity: .9; backdrop-filter: blur(4px); }
+    .hud button:active { transform: scale(.98); }
+    #visitors { padding: 8px 12px; border-radius: 12px; background: #0b0b0b; border: 1px solid #232323; font-size: 14px; }
+
+    /* 時鐘塊 */
+    .clock { text-align: center; transform: translateX(var(--nudge-x)); will-change: transform; }
+    .time { font-weight: 700; letter-spacing: 0.04em; line-height: .95; font-size: clamp(54px, 16vw, 160px); text-shadow: 0 0 8px rgba(125,211,252,.15); color: var(--clock-color, var(--fg)); }
+    .date { opacity: .9; font-size: clamp(16px, 3.6vw, 28px); margin-top: 6px; color: var(--date-color, #c9c9c9); }
+
+    /* 提示 */
+    .hint { position: fixed; left: 12px; bottom: 12px; z-index: 10; font-size: 14px; opacity: .85; color: #cfcfcf; background: #101010; border: 1px solid #272727; padding: 8px 12px; border-radius: 12px; }
+
+    /* 設定面板 */
+    #panel { position: fixed; right: 10px; top: 54px; width: min(86vw, 380px); z-index: 30; background: #0d0d0d; border: 1px solid #2a2a2a; border-radius: 16px; padding: 14px 14px 10px; box-shadow: 0 12px 34px rgba(0,0,0,.55); }
+    #panel h3 { margin: 0 0 8px; font-size: 16px; }
+    #panel .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 4px; }
+    #panel input[type="number"] { width: 90px; }
+    #panel hr { border: none; border-top: 1px solid #232323; margin: 8px 0; }
+    #panel label { font-size: 14px; color: #ddd; }
+
+    .btn { font-size: 14px; padding: 8px 12px; border-radius: 12px; border: 1px solid #333; background:#111; color:var(--fg); cursor:pointer; }
+    .btn:active{ transform: scale(.98); }
+
+    /* 小動物（emoji 走位） */
+    #animals { position: fixed; inset: 0; pointer-events: none; overflow: hidden; z-index: 0; }
+    .ani { position: absolute; font-size: clamp(24px, 6vw, 42px); filter: drop-shadow(0 2px 6px rgba(0,0,0,.5)); opacity: .95; }
+    @keyframes swim { from { transform: translateX(120vw) } to { transform: translateX(-140vw) } }
+
+    /* 自動隱藏 HUD */
+    .hud.hidden { opacity: 0; pointer-events: none; transition: opacity .4s ease; }
+
+    @media (display-mode: standalone) { body { padding-left: var(--safe-padding); } }
+    @media (prefers-reduced-motion: reduce) { .time { text-shadow: none; } .ani { display: none !important; } }
+  </style>
+</head>
+<body>
+  <div id="bgLayer" aria-hidden="true"></div>
+  <div class="overlay" aria-hidden="true"></div>
+
+  <header class="hud" id="hud">
+    <button id="fsBtn" title="切換全螢幕">⤢ 全螢幕</button>
+    <button id="gearBtn" title="設定">⚙️ 設定</button>
+    <div id="visitors" title="瀏覽次數">👀 <span id="viewCount">—</span></div>
+  </header>
+
+  <main id="stage" aria-live="polite">
+    <div class="clock" data-burnin>
+      <div class="time" id="time">00:00:00</div>
+      <div class="date" id="date">—</div>
+    </div>
+
+    <div id="animals" aria-hidden="true"></div>
+
+    <div id="tapHint" class="hint">輕點畫面可嘗試全螢幕（建議加入主畫面）</div>
+  </main>
+
+  <aside id="panel" hidden>
+    <h3>⚙️ 設定</h3>
+    <div class="row"><label>24 小時制</label><input type="checkbox" id="opt24h"></div>
+    <div class="row"><label>顯示秒數</label><input type="checkbox" id="optSec"></div>
+    <div class="row"><label>啟動時自動全螢幕（需互動）</label><input type="checkbox" id="optAutoFS"></div>
+    <hr/>
+    <div class="row"><label>防烙印位移（像素）</label><input type="number" id="optNudge" min="0" max="20" step="1" value="10"></div>
+    <div class="row"><label>位移週期（分鐘）</label><input type="number" id="optNudgeMin" min="1" max="30" step="1" value="2"></div>
+    <div class="row"><label>小動物特效</label><input type="checkbox" id="optAnimals" checked></div>
+    <hr/>
+    <!-- 文字顏色設定 -->
+    <div class="row"><label>時鐘顏色</label><input type="color" id="optClockColor" value="#e6e6e6"></div>
+    <div class="row"><label>日期顏色</label><input type="color" id="optDateColor" value="#c9c9c9"></div>
+    <div class="row"><button class="btn" id="btnColorReset">重設顏色</button></div>
+    <!-- 背景：多圖上傳（最多5張）、隨機輪播（預設5分）、下一張/清除 -->
+    <div class="row"><label>背景圖片（最多 5 張）</label>
+      <label class="btn" for="pickBg">📁 選圖片</label>
+      <input id="pickBg" type="file" accept="image/*" multiple hidden />
+    </div>
+    <div class="row"><label>輪播間隔（分鐘）</label><input type="number" id="bgInterval" min="0.5" step="0.5" value="5"></div>
+    <div class="row"><button class="btn" id="btnBgToggle" aria-pressed="true">輪播：開</button><button class="btn" id="btnBgNext">下一張</button><button class="btn" id="btnBgClear">清除背景</button></div>
+  </aside>
+
+  <script>
+    // ========= 小工具 =========
+    const $ = (sel, el=document) => el.querySelector(sel);
+    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+    // ========= 儲存設定（localStorage） =========
+    const store = {
+      get(k='oledClockCfg', d={}){ try{ return JSON.parse(localStorage.getItem(k)||JSON.stringify(d)); }catch{ return d; } },
+      set(v, k='oledClockCfg'){ localStorage.setItem(k, JSON.stringify(v)); }
+    };
+    const cfg = Object.assign({
+      h24: true, showSec: true, autoFS: false,
+      nudgePx: 10, nudgeMin: 2, animals: true,
+      bgIntervalMin: 5, bgSlideshowOn: true,
+      clockColor: '#e6e6e6', dateColor: '#c9c9c9'
+    }, store.get());
+
+    // ========= IndexedDB（存背景 Blob，容量大很多） =========
+    const DB_NAME = 'oledClockDB';
+    const STORE = 'bgImages';
+    const IDS_KEY = 'oledClockBgIds'; // 存在 localStorage 的 id 清單（最多 5）
+
+    function openDB(){
+      return new Promise((resolve, reject)=>{
+        const req = indexedDB.open(DB_NAME, 1);
+        req.onupgradeneeded = (e)=>{
+          const db = req.result;
+          if(!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE);
+        };
+        req.onsuccess = ()=> resolve(req.result);
+        req.onerror = ()=> reject(req.error);
+      });
+    }
+    async function idbPut(id, blob){ const db = await openDB(); return new Promise((res, rej)=>{ const tx = db.transaction(STORE, 'readwrite'); tx.objectStore(STORE).put(blob, id); tx.oncomplete = ()=> res(); tx.onerror = ()=> rej(tx.error); }); }
+    async function idbGet(id){ const db = await openDB(); return new Promise((res, rej)=>{ const tx = db.transaction(STORE, 'readonly'); const req = tx.objectStore(STORE).get(id); req.onsuccess = ()=> res(req.result||null); req.onerror = ()=> rej(req.error); }); }
+    async function idbDel(id){ const db = await openDB(); return new Promise((res, rej)=>{ const tx = db.transaction(STORE, 'readwrite'); tx.objectStore(STORE).delete(id); tx.oncomplete = ()=> res(); tx.onerror = ()=> rej(tx.error); }); }
+    function readIds(){ try{ return JSON.parse(localStorage.getItem(IDS_KEY)||'[]'); }catch{ return []; } }
+    function saveIds(ids){ localStorage.setItem(IDS_KEY, JSON.stringify(ids)); }
+
+    // ========= 時鐘 =========
+    const timeEl = $('#time');
+    const dateEl = $('#date');
+    const weekdays = ['日','一','二','三','四','五','六'];
+    const fmt2 = (n)=> n<10? ('0'+n): ''+n;
+    function tick(){ const now = new Date(); let h = now.getHours(); if(!cfg.h24){ h = ((h+11)%12)+1; } const m = now.getMinutes(); const s = now.getSeconds(); timeEl.textContent = cfg.showSec ? `${fmt2(h)}:${fmt2(m)}:${fmt2(s)}` : `${fmt2(h)}:${fmt2(m)}`; dateEl.textContent = `${now.getFullYear()}-${fmt2(now.getMonth()+1)}-${fmt2(now.getDate())}（${weekdays[now.getDay()]}）`; }
+    setInterval(tick, 250); tick();
+
+    // ========= 防烙印位移（左右） =========
+    function randomInt(min, max){ return Math.floor(Math.random()*(max-min+1))+min; }
+    function nudge(){ const amp = Math.max(0, Math.min(20, Number(cfg.nudgePx)||0)); const dx = amp===0 ? 0 : randomInt(-amp, amp); document.documentElement.style.setProperty('--nudge-x', dx+'px'); }
+    let nudgeTimer; function startNudger(){ clearInterval(nudgeTimer); nudge(); const ms = Math.max(1, Number(cfg.nudgeMin)||2)*60*1000; nudgeTimer = setInterval(nudge, ms); }
+    startNudger();
+
+    // ========= 小動物 =========
+    const animalsWrap = $('#animals');
+    const animalList = ['🐟','🐱','🐦','🦊','🐧','🐢'];
+    function spawnAnimal(){ if(!cfg.animals) return; const el = document.createElement('div'); el.className='ani'; el.textContent = animalList[Math.floor(Math.random()*animalList.length)]; const y = Math.random()*80 + 10; const dur = Math.random()*20 + 18; el.style.top = y+'vh'; el.style.right = '-10vw'; el.style.animation = `swim ${dur}s linear forwards`; animalsWrap.appendChild(el); setTimeout(()=> el.remove(), (dur+0.5)*1000); }
+    let animalTimer; function startAnimals(){ if(animalTimer) clearInterval(animalTimer); if(!cfg.animals) return; animalTimer = setInterval(()=>{ if(cfg.animals) spawnAnimal(); }, (7000 + Math.random()*7000)); }
+    startAnimals();
+
+    // ========= 瀏覽次數（本機） =========
+    (function views(){ const key = 'pageViews'; const v = Number(localStorage.getItem(key)||0)+1; localStorage.setItem(key, v); $('#viewCount').textContent = v.toLocaleString(); })();
+
+    // ========= 全螢幕 =========
+    async function enterFullscreen(){ try{ if(!document.fullscreenElement){ await document.body.requestFullscreen(); } if(screen.orientation && screen.orientation.lock){ try{ await screen.orientation.lock('landscape'); }catch{} } $('#tapHint').style.display='none'; fsBtn.textContent='⤢ 退出全螢幕'; }catch(e){ console.log('Fullscreen failed:', e); } }
+    async function exitFullscreen(){ try{ if(document.fullscreenElement) await document.exitFullscreen(); }catch{} fsBtn.textContent='⤢ 全螢幕'; }
+    const fsBtn = $('#fsBtn'); fsBtn.addEventListener('click', ()=>{ if(document.fullscreenElement) exitFullscreen(); else enterFullscreen(); });
+    let firstTapDone=false; document.addEventListener('pointerdown', async ()=>{ if(!firstTapDone){ firstTapDone=true; if(cfg.autoFS) await enterFullscreen(); } }, { once:true });
+
+    // ========= 自動隱藏 HUD =========
+    const hud = $('#hud'); let hideTimer; function scheduleHideHUD(){ clearTimeout(hideTimer); hud.classList.remove('hidden'); hideTimer = setTimeout(()=> hud.classList.add('hidden'), 5000); }
+    ;['pointermove','pointerdown','keydown'].forEach(ev=>document.addEventListener(ev, scheduleHideHUD)); scheduleHideHUD();
+
+    // ========= 顏色設定 =========
+    const optClockColor = $('#optClockColor'); const optDateColor = $('#optDateColor'); const btnColorReset = $('#btnColorReset');
+    function applyColors(){ document.documentElement.style.setProperty('--clock-color', cfg.clockColor||'#e6e6e6'); document.documentElement.style.setProperty('--date-color', cfg.dateColor||'#c9c9c9'); }
+    applyColors();
+
+    // ========= 設定面板 =========
+    const panel = $('#panel'); const gearBtn = $('#gearBtn'); gearBtn.addEventListener('click', ()=> panel.hidden = !panel.hidden);
+    const opt24h = $('#opt24h'); const optSec = $('#optSec'); const optAutoFS = $('#optAutoFS'); const optNudge = $('#optNudge'); const optNudgeMin = $('#optNudgeMin'); const optAnimals = $('#optAnimals');
+    opt24h.checked = cfg.h24; optSec.checked = cfg.showSec; optAutoFS.checked = cfg.autoFS; optNudge.value = cfg.nudgePx; optNudgeMin.value = cfg.nudgeMin; optAnimals.checked = cfg.animals; optClockColor.value = cfg.clockColor; optDateColor.value = cfg.dateColor;
+    function save(){ cfg.h24=!!opt24h.checked; cfg.showSec=!!optSec.checked; cfg.autoFS=!!optAutoFS.checked; cfg.nudgePx=Math.max(0,Math.min(20,Number(optNudge.value)||0)); cfg.nudgeMin=Math.max(1,Math.min(30,Number(optNudgeMin.value)||2)); cfg.animals=!!optAnimals.checked; cfg.bgIntervalMin=Math.max(0.5,Number(bgInterval.value)||5); cfg.bgSlideshowOn=btnBgToggle.getAttribute('aria-pressed')==='true'; cfg.clockColor=optClockColor.value; cfg.dateColor=optDateColor.value; store.set(cfg); applyColors(); startNudger(); startAnimals(); tick(); startSlideshow(); }
+    panel.addEventListener('change', save);
+    btnColorReset.addEventListener('click', ()=>{ cfg.clockColor='#e6e6e6'; cfg.dateColor='#c9c9c9'; optClockColor.value=cfg.clockColor; optDateColor.value=cfg.dateColor; save(); });
+
+    // ========= 背景（IndexedDB 版，多圖最多 5 張） =========
+    const pickBg = $('#pickBg'); const bgInterval = $('#bgInterval'); const btnBgToggle = $('#btnBgToggle'); const btnBgNext = $('#btnBgNext'); const btnBgClear = $('#btnBgClear');
+    let bgIds = readIds();
+    let lastId = bgIds.length ? bgIds[bgIds.length-1] : null;
+    let currentObjectURL = null;
+
+    function revokeURL(){ if(currentObjectURL){ URL.revokeObjectURL(currentObjectURL); currentObjectURL=null; } }
+    async function applyBgById(id){ if(!id) return; const blob = await idbGet(id); if(!blob) return; revokeURL(); const url = URL.createObjectURL(blob); currentObjectURL = url; document.body.style.setProperty('--user-bg', `url('${url}')`); const bg = document.getElementById('bgLayer'); if(bg) bg.style.backgroundImage = `url('${url}')`; }
+
+    (async ()=>{ if(lastId) await applyBgById(lastId); })();
+
+    // 圖片壓縮（最長邊 1600px，JPEG 0.8） → Blob
+    function fileToJPEGBlob(file){
+      return new Promise((resolve,reject)=>{
+        const reader = new FileReader();
+        reader.onload = ()=>{
+          const img = new Image();
+          img.onload = ()=>{
+            const maxSide=1600; let w=img.width,h=img.height;
+            if(Math.max(w,h)>maxSide){ const scale=maxSide/Math.max(w,h); w=Math.round(w*scale); h=Math.round(h*scale); }
+            const canvas=document.createElement('canvas'); canvas.width=w; canvas.height=h; const ctx=canvas.getContext('2d'); ctx.drawImage(img,0,0,w,h);
+            canvas.toBlob(b=>{ if(b) resolve(b); else reject(new Error('toBlob失敗')); }, 'image/jpeg', 0.8);
+          };
+          img.onerror = ()=> reject(new Error('載入圖片失敗'));
+          img.src = reader.result;
+        };
+        reader.onerror = ()=> reject(reader.error);
+        reader.readAsDataURL(file);
+      });
+    }
+
+    pickBg.addEventListener('change', async ()=>{
+      if(!pickBg.files || pickBg.files.length===0) return;
+      const remain = Math.max(0, 5 - bgIds.length);
+      const files = Array.from(pickBg.files).slice(0, remain);
+      if(remain===0){ alert('已達 5 張上限，請先清除再新增'); pickBg.value=''; return; }
+      try{
+        for(const f of files){
+          const blob = await fileToJPEGBlob(f);
+          const id = `bg-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+          await idbPut(id, blob);
+          bgIds.push(id);
+        }
+        saveIds(bgIds);
+        lastId = bgIds[bgIds.length-1];
+        await applyBgById(lastId);
+        startSlideshow();
+      }catch(e){ console.error(e); alert('加入圖片失敗'); }
+      pickBg.value='';
+    });
+
+    btnBgClear.addEventListener('click', async ()=>{
+      // 刪除所有 Blob & 清單
+      for(const id of bgIds){ try{ await idbDel(id); }catch{} }
+      bgIds = []; saveIds(bgIds); lastId=null; revokeURL(); document.body.style.removeProperty('--user-bg'); const bg=document.getElementById('bgLayer'); if(bg) bg.style.backgroundImage='none'; stopSlideshow();
+    });
+
+    btnBgNext.addEventListener('click', async ()=>{ await setRandomBg(); startSlideshow(); });
+
+    async function setRandomBg(){ if(!bgIds.length) return; let i = Math.floor(Math.random()*bgIds.length); const lastIndex = bgIds.indexOf(lastId); if(bgIds.length>1 && i===lastIndex){ i = (i+1)%bgIds.length; } lastId = bgIds[i]; await applyBgById(lastId); }
+
+    // 輪播控制
+    bgInterval.value = String(cfg.bgIntervalMin || 5);
+    function syncToggle(){ const on = cfg.bgSlideshowOn !== false; btnBgToggle.textContent = on? '輪播：開':'輪播：關'; btnBgToggle.setAttribute('aria-pressed', String(on)); }
+    syncToggle();
+    btnBgToggle.addEventListener('click', ()=>{ const on = btnBgToggle.getAttribute('aria-pressed') !== 'true'; btnBgToggle.setAttribute('aria-pressed', String(on)); cfg.bgSlideshowOn = on; store.set(cfg); if(on){ startSlideshow(); } else { stopSlideshow(); } });
+
+    let bgTimer = null; function stopSlideshow(){ if(bgTimer){ clearInterval(bgTimer); bgTimer=null; } }
+    function startSlideshow(){ stopSlideshow(); const mins = Math.max(0.5, Number(bgInterval.value)||5); if(cfg.bgSlideshowOn && bgIds.length && mins>0){ bgTimer = setInterval(()=>{ setRandomBg(); }, mins*60000); } }
+    startSlideshow();
+
+    // ========= 安裝提示 =========
+    let deferredPrompt = null; window.addEventListener('beforeinstallprompt', (e)=>{ e.preventDefault(); deferredPrompt = e; $('#tapHint').textContent = '可從瀏覽器選單「加入主畫面」獲得全螢幕體驗'; });
+
+    // ========= 方向提示 =========
+    function orientationHint(){ if (window.matchMedia('(orientation: portrait)').matches) { $('#tapHint').textContent = '建議橫向使用，輕點可嘗試全螢幕'; } else { $('#tapHint').textContent = '輕點畫面可嘗試全螢幕（建議加入主畫面）'; } }
+    window.addEventListener('orientationchange', orientationHint); orientationHint();
+  </script>
+</body>
+</html>
